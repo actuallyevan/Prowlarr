@@ -101,10 +101,9 @@ namespace NzbDrone.Core.Cache
                                     Payload BLOB NOT NULL,
                                     CompressedSize INTEGER NOT NULL,
                                     UncompressedSize INTEGER NOT NULL,
-                                    CreatedAt INTEGER NOT NULL,
-                                    ExpiresAt INTEGER NOT NULL
+                                    CreatedAt INTEGER NOT NULL
                                 );
-                                CREATE INDEX IF NOT EXISTS IX_QueryCache_ExpiresAt ON QueryCache (ExpiresAt);
+                                CREATE INDEX IF NOT EXISTS IX_QueryCache_CreatedAt ON QueryCache (CreatedAt);
                             ";
                             cmd.ExecuteNonQuery();
                         }
