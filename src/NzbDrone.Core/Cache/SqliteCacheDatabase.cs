@@ -95,7 +95,7 @@ namespace NzbDrone.Core.Cache
                                 );
                                 CREATE INDEX IF NOT EXISTS IX_DownloadCache_LastAccessedAt ON DownloadCache (LastAccessedAt);
 
-                                CREATE TABLE IF NOT EXISTS OutputCache (
+                                CREATE TABLE IF NOT EXISTS QueryCache (
                                     KeyHash TEXT PRIMARY KEY NOT NULL,
                                     OriginalKey TEXT,
                                     Payload BLOB NOT NULL,
@@ -104,7 +104,7 @@ namespace NzbDrone.Core.Cache
                                     CreatedAt INTEGER NOT NULL,
                                     ExpiresAt INTEGER NOT NULL
                                 );
-                                CREATE INDEX IF NOT EXISTS IX_OutputCache_ExpiresAt ON OutputCache (ExpiresAt);
+                                CREATE INDEX IF NOT EXISTS IX_QueryCache_ExpiresAt ON QueryCache (ExpiresAt);
                             ";
                             cmd.ExecuteNonQuery();
                         }

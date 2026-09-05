@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net;
 using DryIoc;
 using Microsoft.AspNetCore.Authorization;
@@ -10,7 +9,6 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -27,7 +25,6 @@ using NzbDrone.Core.Instrumentation;
 using NzbDrone.Core.Lifecycle;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Host.AccessControl;
-using NzbDrone.Host.Caching;
 using NzbDrone.SignalR;
 using Prowlarr.Api.V1.System;
 using Prowlarr.Http;
@@ -89,28 +86,6 @@ namespace NzbDrone.Host
                     builder.AllowAnyOrigin()
                     .WithMethods("GET", "OPTIONS")
                     .AllowAnyHeader());
-            });
-
-            var cacheTtl = int.TryParse(
-                Environment.GetEnvironmentVariable("CACHE_TTL_MINS"),
-                out var minutes)
-                ? minutes
-                : 10;
-
-            var cacheSize = int.TryParse(
-                Environment.GetEnvironmentVariable("CACHE_MAX_SIZE_MB"),
-                out var mega)
-                ? mega
-                : 100;
-
-            services.AddSingleton<IOutputCacheStore, SqliteOutputCacheStore>();
-
-            services.AddOutputCache(options =>
-            {
-                options.DefaultExpirationTimeSpan = TimeSpan.FromMinutes(cacheTtl);
-                options.SizeLimit = cacheSize * 1024 * 1024;
-                options.AddPolicy("NewznabQuery", builder =>
-                    builder.With(context => !IsRssRequest(context.HttpContext.Request)));
             });
 
             services
@@ -308,7 +283,6 @@ namespace NzbDrone.Host
             app.UseCors();
             app.UseAuthentication();
             app.UseAuthorization();
-            app.UseOutputCache();
             app.UseResponseCompression();
             app.Properties["host.AppName"] = BuildInfo.AppName;
 
@@ -360,26 +334,6 @@ namespace NzbDrone.Host
             {
                 instancePolicy.PreventStartIfAlreadyRunning();
             }
-        }
-
-        private static bool IsRssRequest(HttpRequest request)
-        {
-            var query = request.Query;
-            var requestType = query["t"].ToString();
-
-            if (requestType is not ("search" or "tvsearch" or "movie" or "music" or "book"))
-            {
-                return false;
-            }
-
-            string[] searchParams =
-            {
-                "q", "imdbid", "tmdbid", "tvdbid", "rid", "tvmazeid", "traktid", "doubanid",
-                "season", "ep", "album", "artist", "label", "track", "year", "genre",
-                "author", "title", "publisher"
-            };
-
-            return searchParams.All(param => string.IsNullOrWhiteSpace(query[param].ToString()));
         }
     }
 }
