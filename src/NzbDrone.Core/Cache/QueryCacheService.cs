@@ -16,16 +16,21 @@ namespace NzbDrone.Core.Cache
         public async ValueTask<byte[]> GetAsync(string key)
         {
             var hash = CacheKeyHasher.Hash(key);
-            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
             try
             {
                 using var connection = cacheDatabase.OpenConnection();
 
-                const string selectSql = "SELECT Payload, CreatedAt FROM QueryCache WHERE KeyHash = @hash;";
-                var entry = await connection.QueryFirstOrDefaultAsync<QueryCacheRecord>(selectSql, new { hash });
+                const string selectSql = @"
+                        SELECT Payload
+                        FROM QueryCache
+                        WHERE KeyHash = @hash
+                        AND CreatedAt >= (datetime('now', '-' || @ttlMinutes || ' minutes'));
+                    ";
 
-                if (entry?.Payload == null || entry.Payload.Length == 0 || (entry.CreatedAt + (long)CacheTtl.TotalSeconds) <= now)
+                var entry = await connection.QueryFirstOrDefaultAsync<QueryCacheRecord>(selectSql, new { hash, ttlMinutes = CacheTtl.TotalMinutes });
+
+                if (entry?.Payload == null || entry.Payload.Length == 0)
                 {
                     return null;
                 }
@@ -51,19 +56,18 @@ namespace NzbDrone.Core.Cache
             try
             {
                 var compressed = BrotliCompressionHelper.Compress(value, CompressionLevel.Fastest);
-                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
                 using var connection = cacheDatabase.OpenConnection();
 
                 const string upsertSql = @"
                     INSERT INTO QueryCache (KeyHash, OriginalKey, Payload, CompressedSize, UncompressedSize, CreatedAt)
-                    VALUES (@hash, @key, @compressed, @compressedSize, @uncompressedSize, @now)
+                    VALUES (@hash, @key, @compressed, @compressedSize, @uncompressedSize, datetime('now'))
                     ON CONFLICT(KeyHash) DO UPDATE SET
                         OriginalKey = @key,
                         Payload = @compressed,
                         CompressedSize = @compressedSize,
                         UncompressedSize = @uncompressedSize,
-                        CreatedAt = @now;
+                        CreatedAt = datetime('now');
                 ";
 
                 await connection.ExecuteAsync(upsertSql, new
@@ -72,8 +76,7 @@ namespace NzbDrone.Core.Cache
                     key,
                     compressed,
                     compressedSize = compressed.Length,
-                    uncompressedSize = value.Length,
-                    now
+                    uncompressedSize = value.Length
                 });
             }
             catch (Exception ex)
@@ -86,12 +89,10 @@ namespace NzbDrone.Core.Cache
         {
             try
             {
-                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                var threshold = now - (long)CacheTtl.TotalSeconds;
-
                 using var connection = cacheDatabase.OpenConnection();
                 var expiredOutputCount =
-                    connection.Execute("DELETE FROM QueryCache WHERE CreatedAt <= @threshold;", new { threshold });
+                    connection.Execute("DELETE FROM QueryCache WHERE CreatedAt <= (datetime('now', '-' || @ttlMinutes || ' minutes'))",
+                        new { ttlMinutes = CacheTtl.TotalMinutes });
 
                 if (expiredOutputCount > 0)
                 {
@@ -107,7 +108,6 @@ namespace NzbDrone.Core.Cache
         private class QueryCacheRecord
         {
             public byte[] Payload { get; set; }
-            public long CreatedAt { get; set; }
         }
     }
 }

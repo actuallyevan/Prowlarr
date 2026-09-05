@@ -77,8 +77,8 @@ namespace NzbDrone.Core.Cache
                                 }
 
                                 var compressedBytes = BrotliCompressionHelper.Compress(uncompressedBytes);
-                                var createdAt = new DateTimeOffset(fileInfo.CreationTimeUtc).ToUnixTimeSeconds();
-                                var lastAccessedAt = new DateTimeOffset(fileInfo.LastWriteTimeUtc).ToUnixTimeSeconds();
+                                var createdAt = fileInfo.CreationTimeUtc.ToString("yyyy-MM-dd HH:mm:ss");
+                                var lastAccessedAt = fileInfo.LastWriteTimeUtc.ToString("yyyy-MM-dd HH:mm:ss");
 
                                 connection.Execute(insertSql,
                                     new

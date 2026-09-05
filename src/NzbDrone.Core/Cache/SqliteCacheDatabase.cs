@@ -90,8 +90,8 @@ namespace NzbDrone.Core.Cache
                                     CompressedSize INTEGER NOT NULL,
                                     UncompressedSize INTEGER NOT NULL,
                                     FileName TEXT,
-                                    CreatedAt INTEGER NOT NULL,
-                                    LastAccessedAt INTEGER NOT NULL
+                                    CreatedAt DATETIME NOT NULL,
+                                    LastAccessedAt DATETIME NOT NULL
                                 );
                                 CREATE INDEX IF NOT EXISTS IX_DownloadCache_LastAccessedAt ON DownloadCache (LastAccessedAt);
 
@@ -101,7 +101,7 @@ namespace NzbDrone.Core.Cache
                                     Payload BLOB NOT NULL,
                                     CompressedSize INTEGER NOT NULL,
                                     UncompressedSize INTEGER NOT NULL,
-                                    CreatedAt INTEGER NOT NULL
+                                    CreatedAt DATETIME NOT NULL
                                 );
                                 CREATE INDEX IF NOT EXISTS IX_QueryCache_CreatedAt ON QueryCache (CreatedAt);
                             ";

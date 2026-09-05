@@ -39,19 +39,18 @@ namespace NzbDrone.Core.Cache
                 const string selectSql = "SELECT Payload, FileName FROM DownloadCache WHERE KeyHash = @hash;";
                 var result = await connection.QueryFirstOrDefaultAsync<DownloadCacheRecord>(selectSql, new { hash });
 
-                if (result == null || result.Payload == null || result.Payload.Length == 0)
+                if (result?.Payload == null || result.Payload.Length == 0)
                 {
                     return null;
                 }
 
                 _logger.Debug("Download cache hit for {0}: {1}", key, result.FileName.CleanFileName());
 
-                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                const string updateSql = "UPDATE DownloadCache SET LastAccessedAt = @now WHERE KeyHash = @hash;";
+                const string updateSql = "UPDATE DownloadCache SET LastAccessedAt = datetime('now') WHERE KeyHash = @hash;";
 
                 try
                 {
-                    await connection.ExecuteAsync(updateSql, new { now, hash });
+                    await connection.ExecuteAsync(updateSql, new { hash });
                 }
                 catch (Exception ex)
                 {
@@ -81,20 +80,19 @@ namespace NzbDrone.Core.Cache
             try
             {
                 var compressed = BrotliCompressionHelper.Compress(value, CompressionLevel.Fastest);
-                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
                 using var connection = _cacheDatabase.OpenConnection();
 
                 const string upsertSql = @"
                     INSERT INTO DownloadCache (KeyHash, OriginalKey, Payload, CompressedSize, UncompressedSize, FileName, CreatedAt, LastAccessedAt)
-                    VALUES (@hash, @key, @compressed, @compressedSize, @uncompressedSize, @safeFileName, @now, @now)
+                    VALUES (@hash, @key, @compressed, @compressedSize, @uncompressedSize, @safeFileName, datetime('now'), datetime('now'))
                     ON CONFLICT(KeyHash) DO UPDATE SET
                         OriginalKey = @key,
                         Payload = @compressed,
                         CompressedSize = @compressedSize,
                         UncompressedSize = @uncompressedSize,
                         FileName = @safeFileName,
-                        LastAccessedAt = @now;
+                        LastAccessedAt = datetime('now');
                 ";
 
                 await connection.ExecuteAsync(upsertSql, new
@@ -104,8 +102,7 @@ namespace NzbDrone.Core.Cache
                     compressed,
                     compressedSize = compressed.Length,
                     uncompressedSize = value.Length,
-                    safeFileName,
-                    now
+                    safeFileName
                 });
 
                 _logger.Debug("Stored download in SQLite cache for key {0}: {1}", key, safeFileName);
@@ -137,7 +134,7 @@ namespace NzbDrone.Core.Cache
 
                 var currentTotalSize = connection.ExecuteScalar<long>("SELECT COALESCE(SUM(CompressedSize), 0) FROM DownloadCache;");
 
-                _logger.Debug("Total compressed size of download cache: {0} MB, Limit: {1} MB",
+                _logger.Debug("Total size of download cache: {0} MB, Limit: {1} MB",
                     currentTotalSize / 1024 / 1024,
                     maxBytes / 1024 / 1024);
 
