@@ -1,13 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Net;
 using DryIoc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,7 +31,6 @@ using Prowlarr.Http.ClientSchema;
 using Prowlarr.Http.ErrorManagement;
 using Prowlarr.Http.Frontend;
 using Prowlarr.Http.Middleware;
-using IPNetwork = Microsoft.AspNetCore.HttpOverrides.IPNetwork;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace NzbDrone.Host
@@ -54,20 +51,15 @@ namespace NzbDrone.Host
                 b.ClearProviders();
                 b.SetMinimumLevel(LogLevel.Trace);
                 b.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+                b.AddFilter("Microsoft.AspNetCore.HostFiltering", LogLevel.Information);
+                b.AddFilter("Microsoft.AspNetCore.HttpOverrides", LogLevel.Debug);
                 b.AddFilter("Prowlarr.Http.Authentication.ApiKeyAuthenticationHandler", LogLevel.Information);
                 b.AddFilter("Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager", LogLevel.Error);
                 b.AddNLog();
             });
 
-            services.Configure<ForwardedHeadersOptions>(options =>
-            {
-                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
-                options.KnownNetworks.Add(new IPNetwork(IPAddress.Parse("10.0.0.0"), 8));
-                options.KnownNetworks.Add(new IPNetwork(IPAddress.Parse("172.16.0.0"), 12));
-                options.KnownNetworks.Add(new IPNetwork(IPAddress.Parse("192.168.0.0"), 16));
-                options.KnownNetworks.Add(new IPNetwork(IPAddress.Parse("fc00::"), 7));
-                options.KnownNetworks.Add(new IPNetwork(IPAddress.Parse("fe80::"), 10));
-            });
+            services.AddOptions<ForwardedHeadersOptions>()
+                    .Configure<IConfigFileProvider>(ForwardedHeadersConfigurator.Configure);
 
             services.AddRouting(options => options.LowercaseUrls = true);
 
@@ -271,6 +263,7 @@ namespace NzbDrone.Host
             }
 
             app.UseForwardedHeaders();
+            app.UseHostFiltering();
             app.UseMiddleware<LoggingMiddleware>();
             app.UsePathBase(new PathString(configFileProvider.UrlBase));
             app.UseExceptionHandler(new ExceptionHandlerOptions

@@ -284,13 +284,20 @@ namespace NzbDrone.Core.Indexers
 
                         response = await _httpClient.ExecuteProxiedAsync(request, Definition);
                     }
-                    while (response.StatusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or HttpStatusCode.SeeOther);
+                    while (response.StatusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect);
                 }
 
                 fileData = response.ResponseData;
                 elapsedTime = response.ElapsedTime;
 
                 _logger.Debug("Downloaded for release finished ({0} bytes from {1})", fileData.Length, link.AbsoluteUri);
+
+                if (response.Headers?.ContentType?.Contains("text/html", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    throw new HttpException(request, response, "Site responded with html content.");
+                }
+
+                ValidateDownloadData(fileData);
             }
             catch (HttpException ex)
             {
@@ -317,14 +324,12 @@ namespace NzbDrone.Core.Indexers
 
                 throw new ReleaseDownloadException("Download failed", ex);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 _indexerStatusService.RecordFailure(Definition.Id);
-                _logger.Error("Download failed");
+                _logger.Error(ex, "Release download failed ({0})", link.AbsoluteUri);
                 throw;
             }
-
-            ValidateDownloadData(fileData);
 
             return new IndexerDownloadResponse(fileData, elapsedTime);
         }
