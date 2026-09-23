@@ -41,7 +41,7 @@ namespace NzbDrone.Common.Http
             if (enableDownloadCache)
             {
                 // Use Sonarr as the user agent if downloading through prowlarr
-                _userAgent = $"Sonarr/4.0.19.2979 ({osName} {osVersion})";
+                _userAgent = $"Sonarr/4.0.20.3014 ({osName} {osVersion})";
                 _userAgentSimplified = $"Sonarr/4.0";
             }
             else
