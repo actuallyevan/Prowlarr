@@ -16,6 +16,7 @@ using NzbDrone.Common.EnvironmentInfo;
 using NzbDrone.Common.Instrumentation;
 using NzbDrone.Common.Processes;
 using NzbDrone.Common.Serializer;
+using NzbDrone.Core.Cache;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Instrumentation;
@@ -211,6 +212,8 @@ namespace NzbDrone.Host
                               IStartupContext startupContext,
                               Lazy<IMainDatabase> mainDatabaseFactory,
                               Lazy<ILogDatabase> logDatabaseFactory,
+                              ISqliteCacheDatabase sqliteCacheDatabase,
+                              IDownloadCacheMigrator downloadCacheMigrator,
                               DatabaseTarget dbTarget,
                               ISingleInstancePolicy singleInstancePolicy,
                               InitializeLogger initializeLogger,
@@ -241,6 +244,9 @@ namespace NzbDrone.Host
                 _ = logDatabaseFactory.Value;
                 dbTarget.Register();
             }
+
+            sqliteCacheDatabase.Initialize();
+            downloadCacheMigrator.Migrate();
 
             SchemaBuilder.Initialize(container);
 

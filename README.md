@@ -1,83 +1,89 @@
 # Prowlarr
 
-[![Build Status](https://dev.azure.com/Prowlarr/Prowlarr/_apis/build/status/Prowlarr.Prowlarr?branchName=develop)](https://dev.azure.com/Prowlarr/Prowlarr/_build/latest?definitionId=1&branchName=develop)
-[![Translation status](https://translate.servarr.com/widget/servarr/prowlarr/svg-badge.svg)](https://translate.servarr.com/engage/servarr/?utm_source=widget)
-[![Docker Pulls](https://img.shields.io/docker/pulls/hotio/prowlarr.svg)](https://wiki.servarr.com/prowlarr/installation/docker)
-![Github Downloads](https://img.shields.io/github/downloads/Prowlarr/Prowlarr/total.svg)
-[![Backers on Open Collective](https://opencollective.com/Prowlarr/backers/badge.svg)](#backers)
-[![Sponsors on Open Collective](https://opencollective.com/Prowlarr/sponsors/badge.svg)](#sponsors)
-[![Mega Sponsors on Open Collective](https://opencollective.com/Prowlarr/megasponsors/badge.svg)](#mega-sponsors)
+## Installation
 
-Prowlarr is an indexer manager/proxy built on the popular \*arr .net/reactjs base stack to integrate with your various PVR apps. Prowlarr supports management of both Torrent Trackers and Usenet Indexers. It integrates seamlessly with Lidarr, Mylar3, Radarr, Readarr, and Sonarr offering complete management of your indexers with no per app Indexer setup required (we do it all).
+This fork is designed to be a drop-in replacement for existing Prowlarr docker installations. Simply replace your Prowlarr docker image with `ghcr.io/actuallyevan/prowlarr:latest`
 
-## Major Features Include
+Sample docker compose:
+```yaml
+prowlarr:
+    image: ghcr.io/actuallyevan/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      # Configure caching behavior
+      - CACHE_TTL_MINS=10
+      - ENABLE_DOWNLOAD_CACHE=true
+      - DOWNLOAD_CACHE_MAX_SIZE_MB=1000
+    volumes:
+      - /path/to/prowlarr/data:/config
+      # Additional volume mounts as needed
+    ports:
+      - 9696:9696
+    restart: unless-stopped
+```
 
-- Usenet support for 24 indexers natively, including Headphones VIP
-- Usenet support for any Newznab compatible indexer via "Generic Newznab"
-- Torrent support for over 500 trackers with more added all the time
-- Torrent support for any Torznab compatible tracker via "Generic Torznab"
-- Support for custom YML definitions via Cardigann that includes JSON and XML parsing
-- Indexer Sync to Lidarr/Mylar3/Radarr/Readarr/Sonarr, so no manual configuration of the other applications are required
-- Indexer history and statistics
-- Manual searching of Trackers & Indexers at a category level
-- Parameter based manual searching
-- Support for pushing multiple releases at once directly to your download clients from Prowlarr
-- Indexer health and status notifications
-- Per Indexer proxy support (SOCKS4, SOCKS5, HTTP, Flaresolverr)
+## Why this fork?
 
-## Support
+This fork aims to improve certain aspects of Prowlarr to make it work better with remote "infinite" library setups (Debrid/Usenet streaming, etc). This fork will be kept up-to-date with Prowlarr stable releases and you should be able to swap back and forth between them if needed.
 
-[![Wiki](https://img.shields.io/badge/servarr-wiki-181717.svg?maxAge=60)](https://wiki.servarr.com/prowlarr)
-[![Discord](https://img.shields.io/badge/discord-chat-7289DA.svg?maxAge=60)](https://prowlarr.com/discord)
+## Cache indexer query responses
 
-Note: GitHub Issues are for Bugs and Feature Requests Only
+| Env Var           | Default | Description                                                                                            |
+|-------------------|---------|--------------------------------------------------------------------------------------------------------|
+| CACHE_TTL_MINS    | 10      | How long a particular query response should be cached for. RSS queries are not cached.                 |
 
-[![GitHub - Bugs and Feature Requests Only](https://img.shields.io/badge/github-issues-red.svg?maxAge=60)](https://github.com/Prowlarr/Prowlarr/issues)
+Debrid/Usenet mounting tools cause a lot of repeated queries to the indexer that waste time and API queries. In particular, the workflow for most Usenet streaming setups is:
+- Arrs search for an item
+- Arr grabs the item
+- Tools check whether the nzb is streamable
+- If not streamable, mark the download as failed which triggers another search
+- Repeat
 
-## Indexers & Trackers
+An analysis of Prowlarr query history showed that nearly 30% of requests were duplicated within 10 minutes. Caching these responses saves thousands of indexer calls and drastically speeds up search and import times.
 
-[![Supported Indexers](https://img.shields.io/badge/Supported%20Indexers-View%20all%20currently%20supported%20indexers%20%26%20trackers-important)](https://wiki.servarr.com/en/prowlarr/supported-indexers)
+Generally, if you're using any of the streaming clients, this fork will give you much better search performance. Run this SQL query against your Prowlarr database if you want to check how beneficial caching would be for your setup:
 
-[![Indexer Requests](https://img.shields.io/badge/Indexer%20Requests-Create%20and%20view%20existing%20requests%20for%20trackers%20and%20indexers-informational)](https://requests.prowlarr.com)
+```sql
+WITH enriched AS (
+    SELECT
+        IndexerId,
+        json_extract(Data, '$.url') AS url,
+        CAST(strftime('%s', date) / 600 AS INTEGER) AS window_id
+    FROM History
+    WHERE date >= datetime('now', '-90 days') AND EventType = 2
+    ),
+    grouped AS (
+SELECT
+    COUNT(*) AS total_calls,
+    COUNT(*) - 1 AS duplicate_calls
+FROM enriched
+GROUP BY
+    IndexerId, url, window_id
+    )
+SELECT
+    SUM(total_calls) AS total_requests,
+    SUM(duplicate_calls) AS total_duplicate_calls,
+    100.0 * SUM(duplicate_calls) / SUM(total_calls) AS duplicate_percent
+FROM grouped;
+```
 
-## Contributors & Developers
+## Cache nzb/torrent files
 
-[API Documentation](https://prowlarr.com/docs/api/)
+| Env Var                    | Default | Description                                                                                                                                                                           |
+|----------------------------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ENABLE_DOWNLOAD_CACHE      | false   | Whether Prowlarr should download and cache nzb/torrent files                                                                                                                          |
+| DOWNLOAD_CACHE_MAX_SIZE_MB | 1000    | Maximum size of download cache on disk. The cleanup job runs with the housekeeping tasks every 24 hours so this is not a strict limit. In testing, 1GB of disk cache stored ~7k nzbs. |
 
-This project exists thanks to all the people who contribute.
+There is potential for download loops in arrs where the same release is re-downloaded repeatedly due to mismatches in the parsed release custom format score and custom format score after import. This problem gets exacerbated when you use tools like Newtarr/Houndarr/Huntarr/etc to automate searching.
 
-- [Contribute (GitHub)](CONTRIBUTING.md)
-- [Contribution (Wiki Article)](https://wiki.servarr.com/prowlarr/contributing)
-- [YML Indexer Definition (Wiki Article)](https://wiki.servarr.com/prowlarr/cardigann-yml-definition)
+Typically, Usenet indexers frown upon repeatedly downloading the same nzb, which can result in bans. This feature caches all nzbs and torrents locally so future grabs don't hit indexers. This also helps when rebuilding libraries/searching after a change in custom formats and/or quality profiles.
 
-[![Contributors List](https://opencollective.com/Prowlarr/contributors.svg?width=890&button=false)](https://github.com/Prowlarr/Prowlarr/graphs/contributors)
+> [!NOTE]
+> When this feature is enabled, nzb/torrent downloads will happen through Prowlarr instead of Sonarr/Radarr. The user-agent is set to Sonarr when this feature is turned on to prevent restrictions or other issues with Usenet indexers.
 
-## Backers
+## Contributing
 
-Thank you to all our backers! 🙏 [Become a backer](https://opencollective.com/Prowlarr#backer)
-![Backers List](https://opencollective.com/Prowlarr/backers.svg?width=890)
-
-## Sponsors
-
-Support this project by becoming a sponsor. Your logo will show up here with a link to your website. [Become a sponsor](https://opencollective.com/Prowlarr#sponsor)
-![Sponsors List](https://opencollective.com/Prowlarr/sponsors.svg?width=890)
-
-## Mega Sponsors
-
-![Mega Sponsors List](https://opencollective.com/Prowlarr/tiers/mega-sponsor.svg?width=890)
-
-## JetBrains
-
-Thank you to [<img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.png" alt="JetBrains" width="96">](http://www.jetbrains.com/) for providing us with free licenses to their great tools.
-
-* [<img src="https://resources.jetbrains.com/storage/products/company/brand/logos/ReSharper_icon.png" alt="ReSharper" width="32"> ReSharper](http://www.jetbrains.com/resharper/)
-* [<img src="https://resources.jetbrains.com/storage/products/company/brand/logos/WebStorm_icon.png" alt="WebStorm" width="32"> WebStorm](http://www.jetbrains.com/webstorm/)
-* [<img src="https://resources.jetbrains.com/storage/products/company/brand/logos/Rider_icon.png" alt="Rider" width="32"> Rider](http://www.jetbrains.com/rider/)
-* [<img src="https://resources.jetbrains.com/storage/products/company/brand/logos/dotTrace_icon.png" alt="dotTrace" width="32"> dotTrace](http://www.jetbrains.com/dottrace/)
-
-### License
-
-- [GNU GPL v3](http://www.gnu.org/licenses/gpl.html)
-- Copyright 2010-2025
-
-Icon Credit - [Box vector created by freepik - www.freepik.com](https://www.freepik.com/vectors/box)
+Feel free to open issues or pull requests for any changes you'd like to see.

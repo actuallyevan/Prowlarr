@@ -12,6 +12,7 @@ using Microsoft.Net.Http.Headers;
 using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
+using NzbDrone.Core.Cache;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.Indexers;
@@ -21,6 +22,7 @@ using NzbDrone.Core.ThingiProvider.Status;
 using Prowlarr.Http.Extensions;
 using Prowlarr.Http.REST;
 using BadRequestException = NzbDrone.Core.Exceptions.BadRequestException;
+using HttpRequest = Microsoft.AspNetCore.Http.HttpRequest;
 
 namespace NzbDrone.Api.V1.Indexers
 {
@@ -35,6 +37,8 @@ namespace NzbDrone.Api.V1.Indexers
         private IIndexerStatusService _indexerStatusService;
         private IDownloadMappingService _downloadMappingService { get; set; }
         private IDownloadService _downloadService { get; set; }
+        private QueryCacheService _queryCacheService { get; set; }
+        private IDownloadCacheService _downloadCacheService { get; set; }
         private readonly Logger _logger;
 
         public NewznabController(IndexerFactory indexerFactory,
@@ -43,6 +47,8 @@ namespace NzbDrone.Api.V1.Indexers
             IIndexerStatusService indexerStatusService,
             IDownloadMappingService downloadMappingService,
             IDownloadService downloadService,
+            IDownloadCacheService downloadCacheService,
+            QueryCacheService queryCacheService,
             Logger logger)
         {
             _indexerFactory = indexerFactory;
@@ -51,7 +57,34 @@ namespace NzbDrone.Api.V1.Indexers
             _indexerStatusService = indexerStatusService;
             _downloadMappingService = downloadMappingService;
             _downloadService = downloadService;
+            _downloadCacheService = downloadCacheService;
+            _queryCacheService = queryCacheService;
             _logger = logger;
+        }
+
+        private string BuildCacheKey()
+        {
+            return $"{Request.Path}{Request.QueryString}";
+        }
+
+        private static bool IsRssRequest(HttpRequest request)
+        {
+            var query = request.Query;
+            var requestType = query["t"].ToString();
+
+            if (requestType is not ("search" or "tvsearch" or "movie" or "music" or "book"))
+            {
+                return false;
+            }
+
+            string[] searchParams =
+            {
+                "q", "imdbid", "tmdbid", "tvdbid", "rid", "tvmazeid", "traktid", "doubanid",
+                "season", "ep", "album", "artist", "label", "track", "year", "genre",
+                "author", "title", "publisher"
+            };
+
+            return searchParams.All(param => string.IsNullOrWhiteSpace(query[param].ToString()));
         }
 
         [HttpGet("/api/v1/indexer/{id:int}/newznab")]
@@ -62,6 +95,14 @@ namespace NzbDrone.Api.V1.Indexers
             request.source = Request.GetSource();
             request.server = Request.GetServerUrl();
             request.host = Request.GetHostName();
+
+            var cacheKey = BuildCacheKey();
+            var cachedBytes = await _queryCacheService.GetAsync(cacheKey);
+            if (cachedBytes != null)
+            {
+                var cachedXml = Encoding.UTF8.GetString(cachedBytes);
+                return CreateResponse(cachedXml);
+            }
 
             if (requestType.IsNullOrWhiteSpace())
             {
@@ -200,7 +241,14 @@ namespace NzbDrone.Api.V1.Indexers
 
                     var preferMagnetUrl = indexer.Protocol == DownloadProtocol.Torrent && indexerDef.Settings is ITorrentIndexerSettings torrentIndexerSettings && (torrentIndexerSettings.TorrentBaseSettings?.PreferMagnetUrl ?? false);
 
-                    return CreateResponse(results.ToXml(indexer.Protocol, preferMagnetUrl));
+                    var resultsXml = results.ToXml(indexer.Protocol, preferMagnetUrl);
+
+                    if (!IsRssRequest(Request))
+                    {
+                        await _queryCacheService.SetAsync(cacheKey, Encoding.UTF8.GetBytes(resultsXml));
+                    }
+
+                    return CreateResponse(resultsXml);
                 default:
                     return CreateResponse(CreateErrorXML(202, $"No such function ({requestType})"), statusCode: StatusCodes.Status400BadRequest);
             }
@@ -262,35 +310,58 @@ namespace NzbDrone.Api.V1.Indexers
                 throw new BadRequestException("Failed to normalize provided link");
             }
 
+            var enableDownloadCache = _downloadCacheService.IsEnabled;
+
             // If Indexer is set to download via Redirect then just redirect to the link unless it's a Usenet indexer at which point it forces Redirect.
-            if (indexer.Protocol == DownloadProtocol.Usenet || (indexer.SupportsRedirect && indexerDef.Redirect))
+            if (!enableDownloadCache)
             {
-                _downloadService.RecordRedirect(unprotectedLink, id, source, host, file);
-                return RedirectPermanent(unprotectedLink);
+                if (indexer.Protocol == DownloadProtocol.Usenet || (indexer.SupportsRedirect && indexerDef.Redirect))
+                {
+                    _downloadService.RecordRedirect(unprotectedLink, id, source, host, file);
+                    return RedirectPermanent(unprotectedLink);
+                }
             }
 
-            byte[] downloadBytes;
+            byte[] downloadBytes = null;
+            var contentType = indexer.Protocol == DownloadProtocol.Torrent
+                ? "application/x-bittorrent"
+                : "application/x-nzb";
+            var extension = indexer.Protocol == DownloadProtocol.Torrent ? "torrent" : "nzb";
+            var filename = $"{file}.{extension}";
 
-            try
+            if (enableDownloadCache)
             {
-                downloadBytes = await _downloadService.DownloadReport(unprotectedLink, id, source, host, file);
+                downloadBytes = await _downloadCacheService.Get(unprotectedLink);
             }
-            catch (ReleaseUnavailableException ex)
-            {
-                return CreateResponse(CreateErrorXML(410, ex.Message), statusCode: StatusCodes.Status410Gone);
-            }
-            catch (ReleaseDownloadException ex) when (ex.InnerException is TooManyRequestsException http429)
-            {
-                var http429RetryAfter = Convert.ToInt32(http429.RetryAfter.TotalSeconds);
-                AddRetryAfterHeader(http429RetryAfter);
 
-                return CreateResponse(CreateErrorXML(429, ex.Message), statusCode: StatusCodes.Status429TooManyRequests);
-            }
-            catch (Exception ex)
+            if (downloadBytes == null)
             {
-                _logger.Error(ex);
+                try
+                {
+                    downloadBytes = await _downloadService.DownloadReport(unprotectedLink, id, source, host, file);
 
-                return CreateResponse(CreateErrorXML(500, ex.Message), statusCode: StatusCodes.Status500InternalServerError);
+                    if (enableDownloadCache)
+                    {
+                        await _downloadCacheService.Store(unprotectedLink, downloadBytes, filename);
+                    }
+                }
+                catch (ReleaseUnavailableException ex)
+                {
+                    return CreateResponse(CreateErrorXML(410, ex.Message), statusCode: StatusCodes.Status410Gone);
+                }
+                catch (ReleaseDownloadException ex) when (ex.InnerException is TooManyRequestsException http429)
+                {
+                    var http429RetryAfter = Convert.ToInt32(http429.RetryAfter.TotalSeconds);
+                    AddRetryAfterHeader(http429RetryAfter);
+
+                    return CreateResponse(CreateErrorXML(429, ex.Message), statusCode: StatusCodes.Status429TooManyRequests);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex);
+
+                    return CreateResponse(CreateErrorXML(500, ex.Message), statusCode: StatusCodes.Status500InternalServerError);
+                }
             }
 
             // handle magnet URLs
@@ -306,10 +377,6 @@ namespace NzbDrone.Api.V1.Indexers
                 var magnetUrl = Encoding.UTF8.GetString(downloadBytes);
                 return RedirectPermanent(magnetUrl);
             }
-
-            var contentType = indexer.Protocol == DownloadProtocol.Torrent ? "application/x-bittorrent" : "application/x-nzb";
-            var extension = indexer.Protocol == DownloadProtocol.Torrent ? "torrent" : "nzb";
-            var filename = $"{file}.{extension}";
 
             return File(downloadBytes, contentType, filename);
         }
